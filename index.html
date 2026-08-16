@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>شطرنج با ربات</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f172a;
+      color: #f1f5f9;
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px;
+      overflow-x: hidden;
+    }
+    h1 { font-size: 22px; margin: 6px 0 4px; }
+    .info {
+      font-size: 14px;
+      color: #94a3b8;
+      margin-bottom: 4px;
+      min-height: 20px;
+    }
+    #status {
+      font-size: 15px;
+      margin: 4px 0;
+      min-height: 22px;
+      color: #38bdf8;
+      text-align: center;
+    }
+    #timer {
+      font-size: 18px;
+      font-weight: 700;
+      color: #f87171;
+      margin-bottom: 8px;
+      min-height: 24px;
+    }
+    .board-container {
+      width: min(92vw, 380px);
+      aspect-ratio: 1;
+      border: 3px solid #334155;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+    }
+    #board {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      grid-template-rows: repeat(8, 1fr);
+    }
+    .square {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: clamp(26px, 8.5vw, 40px);
+      cursor: pointer;
+      position: relative;
+      transition: background 0.15s;
+    }
+    .light { background: #e2e8f0; }
+    .dark  { background: #64748b; }
+    .selected {
+      box-shadow: inset 0 0 0 5px #fbbf24;
+    }
+    .possible {
+      box-shadow: inset 0 0 0 4px #22c55e;
+    }
+    .last-move {
+      background: #fcd34d !important;
+    }
+    .controls {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+    }
+    button {
+      background: #1e293b;
+      color: white;
+      border: 1px solid #334155;
+      padding: 10px 16px;
+      border-radius: 10px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    button:active:not(:disabled) { background: #334155; }
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    button.active {
+      background: #2563eb;
+      border-color: #3b82f6;
+    }
+    button.god.active {
+      background: #7c3aed;
+      border-color: #a78bfa;
+    }
+    .level-btns { margin-top: 6px; }
+    #gameOver {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.95);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      text-align: center;
+      padding: 24px;
+    }
+    #gameOver h2 { font-size: 28px; margin-bottom: 12px; }
+    #gameOver p { font-size: 17px; color: #94a3b8; margin-bottom: 22px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>♟️ شطرنج با ربات</h1>
+  <div class="info" id="userInfo"></div>
+  <div id="status">سطح: متوسط — نوبت شما</div>
+  <div id="timer"></div>
+
+  <div class="board-container">
+    <div id="board"></div>
+  </div>
+
+  <div class="controls">
+    <button id="newGameBtn">بازی جدید</button>
+    <button id="undoBtn">برگشت حرکت</button>
+  </div>
+
+  <div class="controls level-btns">
+    <button data-level="1" class="level">آسان</button>
+    <button data-level="2" class="level active">متوسط</button>
+    <button data-level="3" class="level">سخت</button>
+    <button data-level="4" class="level god">حالت خدا</button>
+  </div>
+
+  <div id="gameOver">
+    <h2 id="goTitle">بازی تمام شد</h2>
+    <p id="goMsg"></p>
+    <button id="goRestart">بازی دوباره</button>
+  </div>
+
+  <script>
+    // ========== Safety Check ==========
+    if (typeof Chess === 'undefined') {
+      document.body.innerHTML = `
+        <div style="padding:40px;text-align:center;color:white;font-family:sans-serif">
+          <h2>خطا در بارگذاری</h2>
+          <p>کتابخانه شطرنج لود نشد.<br>لطفاً صفحه را رفرش کنید یا اتصال اینترنت را بررسی کنید.</p>
+        </div>`;
+      throw new Error('chess.js failed to load');
+    }
+
+    // ========== Telegram ==========
+    const hasTelegram = !!(window.Telegram && window.Telegram.WebApp);
+    const tg = hasTelegram ? window.Telegram.WebApp : null;
+
+    function haptic(type, style) {
+      if (!tg?.HapticFeedback) return;
+      try {
+        if (type === 'impact') tg.HapticFeedback.impactOccurred(style || 'light');
+        else tg.HapticFeedback.notificationOccurred(style || 'success');
+      } catch (e) {}
+    }
+
+    if (tg) {
+      try {
+        tg.ready();
+        tg.expand();
+        tg.setHeaderColor?.('#0f172a');
+        tg.setBackgroundColor?.('#0f172a');
+      } catch (e) {}
+    }
+
+    // ========== State ==========
+    let game = new Chess();
+    let selected = null;
+    let possible = [];
+    let lastMove = null;
+    let difficulty = 2;
+    let isBotThinking = false;
+    let gameActive = true;
+    let history = [];
+    let timerId = null;
+    let botTimeout = null;
+    let timeLeft = 10;
+
+    const boardEl   = document.getElementById('board');
+    const statusEl  = document.getElementById('status');
+    const timerEl   = document.getElementById('timer');
+    const userInfo  = document.getElementById('userInfo');
+    const gameOverEl= document.getElementById('gameOver');
+    const newGameBtn= document.getElementById('newGameBtn');
+    const undoBtn   = document.getElementById('undoBtn');
+    const levelBtns = document.querySelectorAll('.level');
+
+    if (tg?.initDataUnsafe?.user) {
+      userInfo.textContent = `سلام ${tg.initDataUnsafe.user.first_name || 'بازیکن'} 👋`;
+    }
+
+    const PIECES = {
+      w: { k:'♔', q:'♕', r:'♖', b:'♗', n:'♘', p:'♙' },
+      b: { k:'♚', q:'♛', r:'♜', b:'♝', n:'♞', p:'♟' }
+    };
+
+    // ========== Piece-Square Tables (PST) ==========
+    // مقادیر برای سفید (از دیدگاه ردیف ۸ به ۱). برای سیاه آینه‌ای می‌شود.
+    const PST = {
+      p: [ // Pawn
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5,  5, 10, 25, 25, 10,  5,  5],
+        [0,  0,  0, 20, 20,  0,  0,  0],
+        [5, -5,-10,  0,  0,-10, -5,  5],
+        [5, 10, 10,-20,-20, 10, 10,  5],
+        [0,  0,  0,  0,  0,  0,  0,  0]
+      ],
+      n: [ // Knight
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50]
+      ],
+      b: [ // Bishop
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5, 10, 10,  5,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20]
+      ],
+      r: [ // Rook
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [0,  0,  0,  5,  5,  0,  0,  0]
+      ],
+      q: [ // Queen
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [-5,  0,  5,  5,  5,  5,  0, -5],
+        [0,  0,  5,  5,  5,  5,  0, -5],
+        [-10,  5,  5,  5,  5,  5,  0,-10],
+        [-10,  0,  5,  0,  0,  0,  0,-10],
+        [-20,-10,-10, -5, -5,-10,-10,-20]
+      ],
+      k: [ // King (middlegame)
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [20, 20,  0,  0,  0,  0, 20, 20],
+        [20, 30, 10,  0,  0, 10, 30, 20]
+      ]
+    };
+
+    function toFa(n) {
+      return String(n).replace(/\d/g, d => '۰۱۲۳۴۵۶۷۸۹'[d]);
+    }
+
+    // ========== UI Helpers ==========
+    function setControlsEnabled(enabled) {
+      newGameBtn.disabled = !enabled;
+      undoBtn.disabled = !enabled || history.length < 2;
+      levelBtns.forEach(b => b.disabled = !enabled);
+    }
+
+    // ========== Timer ==========
+    function clearTimer() {
+      if (timerId) {
+        clearInterval(timerId);
+        timerId = null;
+      }
+      timerEl.textContent = '';
+    }
+
+    function startTimer() {
+      clearTimer();
+      if (!gameActive || isBotThinking) return;
+
+      timeLeft = 10;
+      timerEl.style.color = '#f87171';
+      timerEl.textContent = `⏱ ${toFa(timeLeft)} ثانیه`;
+
+      timerId = setInterval(() => {
+        if (isBotThinking || !gameActive) return;
+        timeLeft--;
+        timerEl.style.color = timeLeft <= 3 ? '#ef4444' : '#f87171';
+        timerEl.textContent = `⏱ ${toFa(timeLeft)} ثانیه`;
+
+        if (timeLeft <= 0) {
+          clearTimer();
+          timeoutLoss();
+        }
+      }, 1000);
+    }
+
+    function timeoutLoss() {
+      if (!gameActive || isBotThinking) return;
+      gameActive = false;
+      clearSelection();
+      setControlsEnabled(false);
+      showEnd('باختی 😢', 'زمانت تمام شد! باید سریع‌تر حرکت می‌کردی.');
+      statusEl.textContent = 'باختی به خاطر اتمام زمان';
+      haptic('notification', 'error');
+    }
+
+    // ========== Board ==========
+    function render() {
+      boardEl.innerHTML = '';
+      const board = game.board();
+
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const sq = document.createElement('div');
+          const light = (r + c) % 2 === 0;
+          sq.className = `square ${light ? 'light' : 'dark'}`;
+
+          const name = 'abcdefgh'[c] + (8 - r);
+
+          if (lastMove && (lastMove.from === name || lastMove.to === name)) {
+            sq.classList.add('last-move');
+          }
+          if (selected === name) sq.classList.add('selected');
+          if (possible.includes(name)) sq.classList.add('possible');
+
+          const p = board[r][c];
+          if (p) {
+            sq.textContent = PIECES[p.color][p.type];
+            sq.style.color = p.color === 'w' ? '#0f172a' : '#f8fafc';
+            sq.style.textShadow = p.color === 'w' ? '0 0 1px #fff' : '0 1px 2px rgba(0,0,0,0.5)';
+          }
+
+          sq.addEventListener('click', () => onClick(name));
+          boardEl.appendChild(sq);
+        }
+      }
+    }
+
+    function onClick(sq) {
+      if (!gameActive || isBotThinking || game.game_over()) return;
+      if (game.turn() !== 'w') return;
+
+      if (selected) {
+        if (possible.includes(sq)) {
+          doMove(selected, sq);
+          return;
+        }
+        const piece = game.get(sq);
+        if (piece && piece.color === 'w') {
+          select(sq);
+          return;
+        }
+        clearSelection();
+        statusEl.textContent = 'حرکت غیرمجاز';
+        haptic('impact', 'light');
+        setTimeout(updateStatus, 1000);
+        return;
+      }
+
+      const piece = game.get(sq);
+      if (piece && piece.color === 'w') {
+        select(sq);
+        haptic('impact', 'light');
+      }
+    }
+
+    function select(sq) {
+      selected = sq;
+      possible = game.moves({ square: sq, verbose: true }).map(m => m.to);
+      render();
+    }
+
+    function clearSelection() {
+      selected = null;
+      possible = [];
+      render();
+    }
+
+    // ========== Player Move ==========
+    function doMove(from, to) {
+      const move = game.move({ from, to, promotion: 'q' });
+      if (!move) {
+        startTimer();
+        return;
+      }
+
+      clearTimer();
+      history.push(move);
+      lastMove = { from, to };
+      clearSelection();
+      render();
+      updateStatus();
+      haptic('impact', 'medium');
+
+      if (game.in_check()) haptic('notification', 'warning');
+
+      if (game.game_over()) {
+        finishGame();
+        return;
+      }
+
+      isBotThinking = true;
+      setControlsEnabled(false);
+      statusEl.textContent = 'ربات در حال فکر کردن...';
+
+      const thinkTime = { 1: 280, 2: 450, 3: 700, 4: 900 }[difficulty] || 500;
+
+      botTimeout = setTimeout(() => {
+        botTimeout = null;
+        botPlay();
+      }, thinkTime);
+    }
+
+    // ========== Bot ==========
+    function botPlay() {
+      if (!gameActive) {
+        isBotThinking = false;
+        return;
+      }
+
+      const depth = difficulty;
+      const move = getBestMove(depth);
+
+      if (!move) {
+        isBotThinking = false;
+        finishGame();
+        return;
+      }
+
+      game.move(move);
+      history.push(move);
+      lastMove = { from: move.from, to: move.to };
+      render();
+      updateStatus();
+      isBotThinking = false;
+
+      if (game.game_over()) {
+        finishGame();
+      } else {
+        setControlsEnabled(true);
+        startTimer();
+      }
+    }
+
+    function getBestMove(depth) {
+      let moves = game.moves({ verbose: true });
+      if (!moves.length) return null;
+
+      if (difficulty === 1 && Math.random() < 0.4) {
+        return moves[Math.floor(Math.random() * moves.length)];
+      }
+
+      // Move ordering
+      moves.sort((a, b) => {
+        const score = (m) => (m.captured ? 10 : 0) + (m.flags.includes('c') ? 5 : 0);
+        return score(b) - score(a);
+      });
+
+      let best = null;
+      let bestScore = -Infinity;
+
+      for (const m of moves) {
+        game.move(m);
+        const score = -minimax(depth - 1, -Infinity, Infinity, false);
+        game.undo();
+
+        if (score > bestScore) {
+          bestScore = score;
+          best = m;
+        }
+      }
+      return best;
+    }
+
+    function minimax(depth, alpha, beta, maxPlayer) {
+      if (depth === 0 || game.game_over()) return evaluate();
+
+      const moves = game.moves({ verbose: true });
+
+      if (maxPlayer) {
+        let best = -Infinity;
+        for (const m of moves) {
+          game.move(m);
+          best = Math.max(best, minimax(depth - 1, alpha, beta, false));
+          game.undo();
+          alpha = Math.max(alpha, best);
+          if (beta <= alpha) break;
+        }
+        return best;
+      } else {
+        let best = Infinity;
+        for (const m of moves) {
+          game.move(m);
+          best = Math.min(best, minimax(depth - 1, alpha, beta, true));
+          game.undo();
+          beta = Math.min(beta, best);
+          if (beta <= alpha) break;
+        }
+        return best;
+      }
+    }
+
+    // ========== Evaluation with Piece-Square Tables ==========
+    function evaluate() {
+      if (game.in_checkmate()) return game.turn() === 'w' ? -100000 : 100000;
+      if (game.in_draw() || game.in_stalemate() || game.in_threefold_repetition()) return 0;
+
+      const pieceValue = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+      let score = 0;
+      const board = game.board();
+
+      for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+          const piece = board[row][col];
+          if (!piece) continue;
+
+          const type = piece.type;
+          const isWhite = piece.color === 'w';
+
+          // ارزش پایه مهره
+          let value = pieceValue[type];
+
+          // امتیاز موقعیت (PST)
+          // برای سفید از جدول مستقیم، برای سیاه جدول را برعکس می‌خوانیم
+          const pstRow = isWhite ? row : 7 - row;
+          const pst = PST[type][pstRow][col];
+          value += pst;
+
+          // اضافه کردن به امتیاز کل (از دیدگاه سیاه = ربات)
+          score += isWhite ? -value : value;
+        }
+      }
+
+      // پاداش کوچک برای کیش
+      if (game.in_check()) {
+        score += game.turn() === 'w' ? -40 : 40;
+      }
+
+      return score;
+    }
+
+    // ========== Status & End ==========
+    function updateStatus() {
+      const names = { 1: 'آسان', 2: 'متوسط', 3: 'سخت', 4: 'حالت خدا' };
+
+      if (game.in_checkmate()) {
+        statusEl.textContent = game.turn() === 'w' ? 'مات! ربات برد' : 'مات! شما بردید 🎉';
+      } else if (game.in_draw()) {
+        statusEl.textContent = 'بازی مساوی شد';
+      } else if (game.in_check()) {
+        statusEl.textContent = game.turn() === 'w' ? '⚠ کیش! نوبت شما' : 'کیش به ربات';
+      } else {
+        statusEl.textContent = `سطح: ${names[difficulty]} — نوبت ${game.turn() === 'w' ? 'شما' : 'ربات'}`;
+      }
+    }
+
+    function finishGame() {
+      gameActive = false;
+      clearTimer();
+      isBotThinking = false;
+      if (botTimeout) {
+        clearTimeout(botTimeout);
+        botTimeout = null;
+      }
+      setControlsEnabled(false);
+
+      let title, msg;
+      if (game.in_checkmate()) {
+        if (game.turn() === 'w') {
+          title = 'باختی 😢';
+          msg = difficulty === 4 ? 'حالت خدا تقریباً شکست‌ناپذیره...' : 'ربات شما را مات کرد';
+        } else {
+          title = 'بردی! 🎉';
+          msg = difficulty === 4 ? 'عجب! تونستی حالت خدا رو شکست بدی؟!' : 'آفرین! ربات را مات کردی';
+        }
+      } else {
+        title = 'مساوی';
+        msg = 'بازی به تساوی رسید';
+      }
+      showEnd(title, msg);
+      haptic('notification', game.turn() === 'b' ? 'success' : 'error');
+    }
+
+    function showEnd(title, msg) {
+      document.getElementById('goTitle').textContent = title;
+      document.getElementById('goMsg').textContent = msg;
+      gameOverEl.style.display = 'flex';
+    }
+
+    // ========== Controls ==========
+    function newGame() {
+      if (botTimeout) {
+        clearTimeout(botTimeout);
+        botTimeout = null;
+      }
+      clearTimer();
+
+      game = new Chess();
+      selected = null;
+      possible = [];
+      lastMove = null;
+      history = [];
+      isBotThinking = false;
+      gameActive = true;
+      gameOverEl.style.display = 'none';
+
+      render();
+      updateStatus();
+      startTimer();
+      setControlsEnabled(true);
+    }
+
+    newGameBtn.addEventListener('click', newGame);
+    document.getElementById('goRestart').addEventListener('click', () => {
+      gameOverEl.style.display = 'none';
+      newGame();
+    });
+
+    undoBtn.addEventListener('click', () => {
+      if (!gameActive || isBotThinking || history.length < 2) return;
+
+      clearTimer();
+      game.undo();
+      game.undo();
+      history.pop();
+      history.pop();
+      lastMove = history.length ? { from: history.at(-1).from, to: history.at(-1).to } : null;
+      clearSelection();
+      render();
+      updateStatus();
+      startTimer();
+      setControlsEnabled(true);
+    });
+
+    levelBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!gameActive || isBotThinking) return;
+        levelBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        difficulty = +btn.dataset.level;
+        newGame();
+      });
+    });
+
+    // Start
+    render();
+    updateStatus();
+    startTimer();
+    setControlsEnabled(true);
+  </script>
+</body>
+</html>
